@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Cargadores EV</title>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAK8YvEpER2AaGi1JvSEz1fDSgi8JdnNI8",
+      authDomain: "cargadores-ev-fdfd0.firebaseapp.com",
+      projectId: "cargadores-ev-fdfd0",
+      storageBucket: "cargadores-ev-fdfd0.firebasestorage.app",
+      messagingSenderId: "997339169227",
+      appId: "1:997339169227:web:162829fd1832198206f64e"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    const TOTAL = 12;
+    let state = {
+      poles: Array.from({length: TOTAL}, (_, i) => ({id: i+1, status: "free", user: null, since: null})),
+      queue: []
+    };
+
+    // ── Save to Firestore ──────────────────────────────────────────────
+    async function saveState() {
+      await setDoc(doc(db, "ev", "state"), state);
+    }
+
+    // ── Init: create doc if not exists ────────────────────────────────
+    async function initState() {
+      const snap = await getDoc(doc(db, "ev", "state"));
+      if (!snap.exists()) await saveState();
+    }
+
+    // ── Real-time listener ────────────────────────────────────────────
+    function startListener() {
+      onSnapshot(doc(db, "ev", "state"), (snap) => {
+        if (snap.exists()) {
+          const prev = state;
+          state = snap.data();
+          checkQueueNotifications(prev, state);
+          render();
+        }
+      });
+    }
+
+    // ── Queue notifications ───────────────────────────────────────────
+    function checkQueueNotifications(prev, curr) {
+      if (!prev.poles) return;
+      const newlyFree = curr.poles.filter(p =>
+        p.status === "free" && prev.poles.find(o => o.id === p.id && o.status === "occupied")
+      );
+      if (newlyFree.length > 0 && curr.queue && curr.queue.length > 0) {
+        showToast(`🔔 ${curr.queue[0].name}, ¡el Poste ${newlyFree[0].id} está libre!`, "notify");
+      }
+    }
+
+    // ── Actions ───────────────────────────────────────────────────────
+    window.occupyPole = async (id) => {
+      const name = prompt("Tu nombre:");
+      if (!name || !name.trim()) return;
+      state.poles = state.poles.map(p =>
+        p.id === id ? {...p, status:"occupied", user: name.trim(), since: Date.now()} : p
+      );
+      await saveState();
+      showToast(`✅ Poste ${id} ocupado por ${name.trim()}`, "success");
+    };
+
+    window.freePole = async (id) => {
+      state.poles = state.poles.map(p =>
+        p.id === id ? {...p, status:"free", user:null, since:null} : p
+      );
+      let notified = null;
+      if (state.queue && state.queue.length > 0) {
+        notified = state.queue[0];
+        state.queue = state.queue.slice(1);
+      }
+      await saveState();
+      if (notified) showToast(`🔔 ${notified.name} — ¡el Poste ${id} está libre!`, "notify");
+      else showToast(`🔓 Poste ${id} liberado`, "info");
+    };
+
+    window.joinQueue = async () => {
+      const name = prompt("Tu nombre para la cola:");
+      if (!name || !name.trim()) return;
+      const n = name.trim();
+      if (!state.queue) state.queue = [];
+      if (state.queue.find(q => q.name.toLowerCase() === n.toLowerCase())) {
+        showToast("Ya estás en la cola con ese nombre", "warn"); return;
+      }
+      state.queue = [...state.queue, {name: n, ts: Date.now()}];
+      await saveState();
+      showToast(`📋 ${n} añadido a la cola (pos. ${state.queue.length})`, "success");
+    };
+
+    window.leaveQueue = async (name) => {
+      state.queue = state.queue.filter(q => q.name !== name);
+      await saveState();
+      showToast(`❌ ${name} salió de la cola`, "info");
+    };
+
+    // ── Time helper ───────────────────────────────────────────────────
+    function timeAgo(ts) {
+      if (!ts) return "";
+      const diff = Math.floor((Date.now() - ts) / 60000);
+      if (diff < 1) return "hace un momento";
+      if (diff === 1) return "hace 1 min";
+      return `hace ${diff} min`;
+    }
+
+    // ── Toast ─────────────────────────────────────────────────────────
+    let toastTimer;
+    function showToast(msg, type="info") {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.className = "toast show " + type;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => t.className = "toast", 4000);
+    }
+
+    // ── Render ────────────────────────────────────────────────────────
+    function render() {
+      const poles = state.poles || [];
+      const queue = state.queue || [];
+      const free = poles.filter(p => p.status === "free").length;
+
+      document.getElementById("stat-free").textContent = free;
+      document.getElementById("stat-free").style.color = free > 0 ? "#22c55e" : "#ef4444";
+      document.getElementById("stat-queue").textContent = queue.length;
+
+      // Grid
+      document.getElementById("grid").innerHTML = poles.map(p => {
+        const isFree = p.status === "free";
+        return `
+          <div class="card ${isFree ? 'card-free' : 'card-occ'}">
+            <div class="pole-header">
+              <span class="pole-num">P${p.id}</span>
+              <span class="badge ${isFree ? 'badge-free' : 'badge-occ'}">${isFree ? 'LIBRE' : 'OCUPADO'}</span>
+            </div>
+            <div class="pole-icon">${isFree ? '🔌' : '🚗'}</div>
+            ${!isFree ? `<div class="pole-user"><div class="uname">${p.user}</div><div class="utime">${timeAgo(p.since)}</div></div>` : '<div class="pole-empty">Disponible</div>'}
+            <button class="btn ${isFree ? 'btn-occupy' : 'btn-free'}" onclick="${isFree ? `occupyPole(${p.id})` : `freePole(${p.id})`}">
+              ${isFree ? 'Ocupar' : 'Liberar'}
+            </button>
+          </div>`;
+      }).join("");
+
+      // Queue
+      const qEl = document.getElementById("queue-list");
+      if (queue.length === 0) {
+        qEl.innerHTML = '<div class="empty-queue">No hay nadie esperando</div>';
+      } else {
+        qEl.innerHTML = queue.map((q, i) => `
+          <div class="queue-item">
+            <div class="qpos">${i+1}</div>
+            <div class="qname">${q.name}</div>
+            <div class="qtime">${timeAgo(q.ts)}</div>
+            <button class="leave-btn" onclick="leaveQueue('${q.name}')">✕</button>
+          </div>`).join("");
+      }
+    }
+
+    // ── Boot ──────────────────────────────────────────────────────────
+    await initState();
+    startListener();
+
+    // refresh time displays every 30s
+    setInterval(render, 30000);
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e2e8f0; font-family: 'DM Sans', 'Segoe UI', sans-serif; min-height: 100vh; display: flex; flex-direction: column; }
+
+    /* Header */
+    header { background: linear-gradient(135deg,#1a1f2e,#0f1117); border-bottom: 1px solid #1e2535; padding: 16px 24px; position: sticky; top:0; z-index:10; }
+    .header-inner { max-width: 920px; margin: 0 auto; display:flex; justify-content:space-between; align-items:center; }
+    .logo { display:flex; align-items:center; gap:12px; }
+    .logo-icon { font-size:28px; filter: drop-shadow(0 0 8px #facc15); }
+    .logo-title { font-size:18px; font-weight:700; letter-spacing:2px; color:#facc15; }
+    .logo-sub { font-size:11px; color:#64748b; letter-spacing:1px; }
+    .stats { display:flex; align-items:center; gap:16px; }
+    .stat-box { text-align:center; }
+    .stat-num { display:block; font-size:24px; font-weight:800; }
+    .stat-label { font-size:10px; color:#64748b; letter-spacing:1px; text-transform:uppercase; }
+    .stat-div { width:1px; height:36px; background:#1e2535; }
+
+    /* Main */
+    main { max-width:920px; margin:0 auto; padding:28px 20px; flex:1; width:100%; }
+    .section-title { font-size:13px; font-weight:600; letter-spacing:2px; text-transform:uppercase; color:#64748b; margin-bottom:16px; }
+
+    /* Grid */
+    #grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(155px,1fr)); gap:12px; }
+    .card { border-radius:12px; padding:16px 14px; display:flex; flex-direction:column; gap:8px; border:1px solid; transition: transform .15s, box-shadow .15s; }
+    .card:hover { transform:translateY(-2px); }
+    .card-free { background: linear-gradient(135deg,#0d2818,#0a1f14); border-color:#166534; }
+    .card-occ  { background: linear-gradient(135deg,#1c1008,#150d05); border-color:#92400e; }
+    .pole-header { display:flex; justify-content:space-between; align-items:center; }
+    .pole-num { font-size:13px; font-weight:700; color:#94a3b8; letter-spacing:1px; }
+    .badge { font-size:9px; font-weight:700; letter-spacing:1px; padding:2px 6px; border-radius:4px; }
+    .badge-free { background:#166534; color:#86efac; }
+    .badge-occ  { background:#92400e; color:#fcd34d; }
+    .pole-icon { font-size:28px; text-align:center; margin:4px 0; }
+    .pole-user { text-align:center; }
+    .uname { font-size:13px; font-weight:600; color:#fcd34d; margin-bottom:2px; }
+    .utime { font-size:10px; color:#78716c; }
+    .pole-empty { text-align:center; font-size:12px; color:#22c55e; opacity:.7; }
+
+    /* Buttons */
+    .btn { border:none; border-radius:8px; padding:8px 14px; font-weight:600; font-size:12px; cursor:pointer; letter-spacing:.5px; transition: opacity .15s, transform .1s; }
+    .btn:hover { opacity:.85; transform:scale(.98); }
+    .btn-occupy { background:#166534; color:#86efac; }
+    .btn-free   { background:#7c2d12; color:#fcd34d; }
+    .btn-queue-join { background:#1e3a5f; color:#93c5fd; font-size:13px; padding:8px 18px; }
+
+    /* Queue */
+    .queue-section { margin-top:36px; }
+    .queue-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+    .empty-queue { background:#1a1f2e; border:1px dashed #1e2535; border-radius:10px; padding:24px; text-align:center; color:#475569; font-size:13px; }
+    #queue-list { display:flex; flex-direction:column; gap:8px; }
+    .queue-item { background:#1a1f2e; border:1px solid #1e2535; border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:14px; animation: slideIn .2s ease; }
+    .qpos { width:28px; height:28px; border-radius:50%; background:#facc15; color:#0f1117; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .qname { flex:1; font-weight:600; font-size:14px; }
+    .qtime { font-size:11px; color:#475569; }
+    .leave-btn { background:none; border:none; color:#ef4444; cursor:pointer; font-size:14px; font-weight:700; padding:4px 8px; border-radius:6px; }
+
+    /* Toast */
+    .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#1e2535; color:#e2e8f0; padding:12px 22px; border-radius:10px; font-size:14px; font-weight:500; z-index:200; box-shadow:0 8px 32px rgba(0,0,0,.5); border:1px solid #2d3748; opacity:0; pointer-events:none; transition: opacity .25s; white-space:nowrap; max-width:90vw; overflow:hidden; text-overflow:ellipsis; }
+    .toast.show { opacity:1; }
+    .toast.success { border-color:#166534; color:#86efac; }
+    .toast.notify  { border-color:#facc15; color:#facc15; background:#1c1a08; }
+    .toast.warn    { border-color:#92400e; color:#fcd34d; }
+    .toast.info    { border-color:#2d3748; }
+
+    footer { text-align:center; padding:16px; font-size:11px; color:#334155; letter-spacing:.5px; border-top:1px solid #1e2535; }
+
+    @keyframes slideIn { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <div>
+          <div class="logo-title">CARGADORES EV</div>
+          <div class="logo-sub">Gestión en tiempo real</div>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat-box">
+          <span class="stat-num" id="stat-free">—</span>
+          <span class="stat-label">Libres</span>
+        </div>
+        <div class="stat-div"></div>
+        <div class="stat-box">
+          <span class="stat-num" style="color:#f59e0b" id="stat-queue">—</span>
+          <span class="stat-label">En cola</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2 class="section-title">Postes de carga</h2>
+      <div id="grid">Conectando con Firebase…</div>
+    </section>
+
+    <section class="queue-section">
+      <div class="queue-header">
+        <h2 class="section-title">Cola de espera</h2>
+        <button class="btn btn-queue-join" onclick="joinQueue()">+ Unirse a la cola</button>
+      </div>
+      <div id="queue-list"><div class="empty-queue">Cargando…</div></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <footer>Sincronización en tiempo real · Firebase Firestore · Cargadores-EV</footer>
+</body>
+</html>
